@@ -12,113 +12,137 @@ fun main() {
 //    val srcFile = File("docFile.docx")
 //    val dstFile = File("docFile2.docx")
     println("Start parsing...")
+    println("I'm in ${File("").canonicalPath}")
+    println()
 
-    val srcFile = File("srcFile.docx")
-
-    val masksFile = File("masks.txt")
     val valuesFile = File("values.xlsx")
-
-    val masks = masksFile.readText().split(";").run {
-        if (isNotEmpty() && last().isEmpty()) {
-            dropLast(1)
-        } else {
-            this
-        }
-    }
-
     val valuesTable = loadDataFromXlsx(valuesFile) ?: return
-    for ((index, _values) in valuesTable.withIndex()) {
-        val values = _values.take(masks.size).map { it.trim() }
-        val docx = XWPFDocument(srcFile.inputStream())
-        if (masks.size != values.size) {
-            println("Error: Masks and values must have same sizes!")
+
+    for (_values in valuesTable) {
+        val (currentFolder, table) = _values
+        println("Start processing folder ${currentFolder}...")
+
+        val srcFile = File(currentFolder, "шаблон.docx")
+
+        val masksFile = File(currentFolder, "маски.txt")
+
+        if (!srcFile.exists() || !masksFile.exists()) {
+            println("Error: Folder $currentFolder not found!")
             continue
         }
-        val fileNumber = index + 1
-        var filename = "dstFile$fileNumber.docx"
-        println("Start replacing $fileNumber file...")
-        masks.zip(values).forEach { (mask, value) ->
-            if (mask == "\$filename\$") {
-                val fixedFilename = value.replace("\\", "_").replace("/", "_")
-                filename = "${fixedFilename}.docx"
+
+        val masks = masksFile.readText().split(";").run {
+            if (isNotEmpty() && last().isEmpty()) {
+                dropLast(1)
+            } else {
+                this
             }
-            else if (mask != "") {
-                replaceTextInDocument(docx, mask, value)
+        }.map { mask -> mask.trim() }
+
+        for ((index, row) in table.withIndex()) {
+            val rowValues = row.take(masks.size).map { it.trim() }
+            val docx = XWPFDocument(srcFile.inputStream())
+            if (masks.size != rowValues.size) {
+                println("Error: Masks and values must have same sizes!")
+                continue
             }
+            val fileNumber = index + 1
+            var filename = "dstFile$fileNumber.docx"
+            println("Start replacing $fileNumber file...")
+            masks.zip(rowValues).forEach { (mask, value) ->
+                if (mask == "\$filename\$") {
+                    val fixedFilename = value
+                        .replace("\\", "_")
+                        .replace("/", "_")
+                    filename = "${fixedFilename}.docx"
+                }
+                else if (mask != "") {
+                    replaceTextInDocument(docx, mask, value)
+                }
+            }
+            println("Finish replacing $fileNumber file.")
+            val outputDir = File("out", currentFolder)
+            if (!outputDir.exists()) {
+                outputDir.mkdirs()
+            }
+            val dstFile = File(outputDir.path, filename)
+            docx.write(dstFile.outputStream())
         }
-        println("Finish replacing $fileNumber file.")
-        val dstFile = File(filename)
-        docx.write(dstFile.outputStream())
+        println("Finish processing folder ${currentFolder}.")
+        println()
     }
 //    println("Finish parsing. Press Enter to exit")
 //    readln()
 }
 
-private fun loadDataFromXlsx(file: File): List<List<String>>? {
-    val result = mutableListOf<List<String>>()
+private fun loadDataFromXlsx(file: File): List<Pair<String, List<List<String>>>>? {
+    val result = mutableListOf<Pair<String, List<List<String>>>>()
+    val dateFormat = SimpleDateFormat("dd.MM.yyyy")
 
     if (!file.exists() || file.extension != "xlsx") {
         return null
     }
     FileInputStream(file).use { fis ->
         val workbook = XSSFWorkbook(fis)
-        val sheet = workbook.getSheetAt(0)
-        val dateFormat = SimpleDateFormat("dd.MM.yyyy")
+        workbook.sheetIterator().forEach { sheet ->
+            val table = mutableListOf<List<String>>()
+            for (row in sheet) {
+                val rowData = mutableListOf<String>()
 
-        for (row in sheet) {
-            val rowData = mutableListOf<String>()
-
-            for ((index, cell) in row.withIndex()) {
-                val cellValue = when (cell.cellType) {
-                    CellType.STRING -> cell.stringCellValue
-                    CellType.NUMERIC -> {
-                        if (DateUtil.isCellDateFormatted(cell)) {
-                            dateFormat.format(cell.dateCellValue)
-                        } else {
-                            val numericValue = cell.numericCellValue
-                            if (numericValue % 1 == 0.0) {
-                                numericValue.toInt().toString()
+                for ((index, cell) in row.withIndex()) {
+                    val cellValue = when (cell.cellType) {
+                        CellType.STRING -> cell.stringCellValue
+                        CellType.NUMERIC -> {
+                            if (DateUtil.isCellDateFormatted(cell)) {
+                                dateFormat.format(cell.dateCellValue)
                             } else {
-                                String.format("%.2f", numericValue)
-                            }
-                        }
-                    }
-                    CellType.BOOLEAN -> cell.booleanCellValue.toString()
-                    CellType.FORMULA -> {
-                        try {
-                            cell.stringCellValue
-                        } catch (e: Exception) {
-                            try {
                                 val numericValue = cell.numericCellValue
                                 if (numericValue % 1 == 0.0) {
                                     numericValue.toInt().toString()
                                 } else {
                                     String.format("%.2f", numericValue)
                                 }
-                            } catch (e: Exception) {
-                                cell.cellFormula
                             }
                         }
+                        CellType.BOOLEAN -> cell.booleanCellValue.toString()
+                        CellType.FORMULA -> {
+                            try {
+                                cell.stringCellValue
+                            } catch (e: Exception) {
+                                try {
+                                    val numericValue = cell.numericCellValue
+                                    if (numericValue % 1 == 0.0) {
+                                        numericValue.toInt().toString()
+                                    } else {
+                                        String.format("%.2f", numericValue)
+                                    }
+                                } catch (e: Exception) {
+                                    cell.cellFormula
+                                }
+                            }
+                        }
+                        CellType.BLANK -> ""
+                        else -> ""
                     }
-                    CellType.BLANK -> ""
-                    else -> ""
+
+//                    rowData.add(cellValue)
+
+                    // if you need to combine the last columns
+                    if (index != row.toList().lastIndex) {
+                        rowData.add(cellValue)
+                    } else {
+                        rowData[rowData.lastIndex] = rowData.last() + ' ' + cellValue
+                    }
                 }
-                rowData.add(cellValue)
 
-                // if you need to combine the last columns
-/*                if (index != row.toList().lastIndex) {
-                    rowData.add(cellValue)
-                } else {
-                    rowData[rowData.lastIndex] = rowData.last() + ' ' + cellValue
-                }*/
+                table.add(rowData)
             }
-
-            result.add(rowData)
+            result.add(sheet.sheetName to table.filter { it.any { s -> s.isNotBlank()} })
         }
 
         workbook.close()
     }
-    return result.filter { it.any { s -> s.isNotBlank()} }
+    return result
 }
 
 
